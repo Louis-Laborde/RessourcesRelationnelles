@@ -2,63 +2,74 @@ name: CI/CD Pipeline
 
 on:
   push:
-    branches: 
-      - 'main'
-      - 'develop'
+    branches:
+      - master
+      - main
   pull_request:
     branches:
-      - 'main'
-      - 'develop'
+      - master
+      - main
 
 jobs:
-  build-test-deploy:
+  test:
     runs-on: ubuntu-latest
 
     services:
-      mysql:
-        image: mysql:5.7
-        env:
-          MYSQL_ROOT_PASSWORD:
-          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
-          MYSQL_USER: root
-          MYSQL_DATABASE: ressources_relationnelles_db        
+      postgres:
+        image: postgres:latest
         ports:
-          - 3306:3306
+          - 5432:5432
+        env:
+          POSTGRES_DB: testdb
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpassword
+        options: >-
+          --health-cmd="pg_isready -U ${{ secrets.POSTGRES_USER }}"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v2
 
       - name: Set up Node.js
         uses: actions/setup-node@v2
         with:
-          node-version: '18'
-
-      - name: Install Prisma CLI
-        run: npm install @prisma/cli
+          node-version: '16'
 
       - name: Install dependencies
         run: npm install
 
-      - name: Run Prisma migrate (if needed)
-        run: npx prisma migrate dev --preview-feature
-
-      - name: Run Prisma generate
-        run: npx prisma generate
-
-      - name: Run unit tests
-        run: npm test
-
-      - name: OWASP ZAP Scan
-        uses: zaproxy/action-full-scan@v0.4.0
-        with:
-          target: 'http://localhost:3000'
-
-      - name: Deploy to Azure VM
-        if: success() && github.ref == 'refs/heads/develop'
-        env:
-          AZURE_VM_IP: ${{ secrets.AZURE_SERVER }}
-          AZURE_VM_USER: ${{ secrets.AZURE_USERNAME }}
-          AZURE_VM_PASSWORD: ${{ secrets.AZURE_PASSWORD }}
+      - name: Set up Prisma
         run: |
-          sshpass -p $AZURE_VM_PASSWORD ssh -o StrictHostKeyChecking=no $AZURE_VM_USER@$AZURE_VM_IP "cd /path/to/your/app && docker-compose up -d"
+          npx prisma generate
+          npx prisma migrate dev --name init
+
+      - name: Run tests
+        run: npm test
+        env:
+          DATABASE_URL: postgres://testuser:testpassword@localhost:5432/testdb
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '16'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Deploy to Heroku
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+        run: |
+          npm run build
+          npx heroku deploy:jar -a your-heroku-app
